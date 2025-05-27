@@ -18,9 +18,9 @@ A comprehensive guide to optimizing Jenkins CI/CD pipelines across time, space, 
 
 This repository provides battle-tested strategies and implementations for optimizing Jenkins CI/CD pipelines across three critical dimensions:
 
-- **⏱️ Time Optimization**: Reduce build times by 60-80% through parallelization and caching
-- **💾 Space Optimization**: Achieve 50-70% disk space reduction through intelligent cleanup
-- **🔒 Security Optimization**: Implement enterprise-grade security with minimal performance impact
+- **Time Optimization**: Reduce build times by 60-80% through parallelization and caching
+- **Space Optimization**: Achieve 50-70% disk space reduction through intelligent cleanup
+- **Security Optimization**: Implement enterprise-grade security with minimal performance impact
 
 ### Key Benefits
 
@@ -264,7 +264,7 @@ This repository provides battle-tested strategies and implementations for optimi
 - **Diagnosis**: Check credential store, vault connectivity, permission assignments
 - **Solutions**: Verify credential configuration, update vault policies, check service accounts
 
-## 🤝 Contributing
+## Contributing
 
 We welcome contributions to improve Jenkins optimization strategies and implementations.
 
