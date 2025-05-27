@@ -151,7 +151,7 @@ This repository provides battle-tested strategies and implementations for optimi
 ### Installation Steps
 
 1. **Clone the Repository**
-
+- git clone https://github.com/ayushsoni77/Pipeline-Optimization.git
 
 2. **Configure Jenkins Plugins**
 - Install required plugins from `plugins.txt`

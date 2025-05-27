@@ -1,0 +1,49 @@
+# Essential Jenkins Optimization Plugins
+# Core plugins for time, space, and security optimization
+
+# Core Pipeline (Required)
+workflow-aggregator:590.v6a_d052e5a_a_b_5
+pipeline-stage-view:2.25
+
+# Time Optimization
+job-cacher:1.2
+parallel-test-executor:1.12
+build-timeout:1.27
+timestamper:1.17
+
+# Space Optimization
+ws-cleanup:0.45
+build-discarder:1.05
+disk-usage:0.28
+
+# Security Essentials
+credentials:2.6.1
+credentials-binding:523.vd859a_4b_122e6
+matrix-auth:3.1.5
+role-strategy:546.vd8f6e0a_a_b_457
+
+# Code Quality & Security Scanning
+sonarqube:2.15
+dependency-check-jenkins-plugin:5.2.1
+warnings-ng:9.12.0
+
+# Distributed Builds
+kubernetes:3734.v562b_b_a_627ea_c
+docker-workflow:1.29
+
+# Essential Utilities
+git:4.11.3
+junit:1.60
+email-ext:2.93
+configuration-as-code:1414.v878271fc496f
+
+# Monitoring
+prometheus:2.0.10
+build-failure-analyzer:2.4.1
+
+# Optional but Recommended
+# Uncomment based on your needs:
+# ldap:2.12
+# slack:631.v40deea_40323b
+# artifactory:3.18.0
+# hashicorp-vault-plugin:3.8.0
