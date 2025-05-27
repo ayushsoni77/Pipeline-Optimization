@@ -1,0 +1,79 @@
+Resource Management and Monitoring
+Effective resource management ensures that Jenkins pipelines operate efficiently without overwhelming the underlying infrastructure.
+
+Resource Allocation involves configuring appropriate resource limits and requests for build agents to prevent resource contention:
+
+groovy
+pipeline {
+    agent {
+        kubernetes {
+            yaml """
+                apiVersion: v1
+                kind: Pod
+                spec:
+                  containers:
+                  - name: build-container
+                    image: openjdk:17-jdk
+                    resources:
+                      requests:
+                        memory: "1Gi"
+                        cpu: "500m"
+                      limits:
+                        memory: "2Gi"
+                        cpu: "1000m"
+                    env:
+                    - name: JAVA_OPTS
+                      value: "-Xmx1536m -XX:MaxMetaspaceSize=256m"
+            """
+        }
+    }
+    stages {
+        stage('Resource-Optimized Build') {
+            steps {
+                sh 'mvn clean package -Dmaven.test.skip=true'
+            }
+        }
+    }
+}
+Performance Monitoring provides insights into pipeline performance and identifies optimization opportunities:
+
+groovy
+pipeline {
+    agent any
+    stages {
+        stage('Build with Monitoring') {
+            steps {
+                script {
+                    def startTime = System.currentTimeMillis()
+                    
+                    sh 'mvn clean package'
+                    
+                    def buildTime = System.currentTimeMillis() - startTime
+                    echo "Build completed in ${buildTime}ms"
+                    
+                    // Send metrics to monitoring system
+                    sh "curl -X POST 'http://metrics-server/api/metrics' -d 'build_time=${buildTime}&job=${env.JOB_NAME}&build=${env.BUILD_NUMBER}'"
+                }
+            }
+        }
+    }
+    post {
+        always {
+            script {
+                def pipelineTime = currentBuild.duration
+                echo "Total pipeline time: ${pipelineTime}ms"
+                
+                // Archive performance metrics
+                writeFile file: 'performance-metrics.json', text: """
+                {
+                    "job": "${env.JOB_NAME}",
+                    "build": "${env.BUILD_NUMBER}",
+                    "duration": ${pipelineTime},
+                    "timestamp": "${new Date().format('yyyy-MM-dd HH:mm:ss')}"
+                }
+                """
+                archiveArtifacts artifacts: 'performance-metrics.json'
+            }
+        }
+    }
+}

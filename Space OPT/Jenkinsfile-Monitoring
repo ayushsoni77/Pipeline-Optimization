@@ -1,0 +1,123 @@
+Monitoring and Automated Space Management
+Proactive Space Monitoring
+Implementing comprehensive space monitoring enables proactive management of disk usage before critical thresholds are reached.
+
+Real-Time Space Monitoring Pipeline continuously tracks disk usage across Jenkins infrastructure:
+
+groovy
+pipeline {
+    agent any
+    triggers {
+        cron('H/15 * * * *') // Run every 15 minutes
+    }
+    stages {
+        stage('Space Monitoring') {
+            steps {
+                script {
+                    // Check disk usage on Jenkins master
+                    def diskUsage = sh(
+                        script: "df -h ${JENKINS_HOME} | awk 'NR==2 {print \$5}' | sed 's/%//'",
+                        returnStdout: true
+                    ).trim().toInteger()
+                    
+                    // Check workspace disk usage
+                    def workspaceUsage = sh(
+                        script: "du -sh ${JENKINS_HOME}/workspace | awk '{print \$1}'",
+                        returnStdout: true
+                    ).trim()
+                    
+                    // Check artifact storage
+                    def artifactUsage = sh(
+                        script: "du -sh ${JENKINS_HOME}/jobs/*/builds/*/archive 2>/dev/null | awk '{sum += \$1} END {print sum \"M\"}' || echo '0M'",
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo "Disk usage: ${diskUsage}%"
+                    echo "Workspace usage: ${workspaceUsage}"
+                    echo "Artifact usage: ${artifactUsage}"
+                    
+                    // Alert if usage exceeds thresholds
+                    if (diskUsage > 85) {
+                        currentBuild.result = 'UNSTABLE'
+                        emailext(
+                            subject: "Jenkins Disk Space Alert - ${diskUsage}% Used",
+                            body: "Jenkins disk usage has exceeded 85%. Current usage: ${diskUsage}%",
+                            to: "${env.ADMIN_EMAIL}"
+                        )
+                    }
+                    
+                    // Trigger cleanup if usage exceeds critical threshold
+                    if (diskUsage > 90) {
+                        build job: 'emergency-cleanup', wait: false
+                    }
+                }
+            }
+        }
+    }
+}
+Automated Cleanup Orchestration implements intelligent cleanup strategies based on space usage patterns and business requirements:
+
+groovy
+pipeline {
+    agent any
+    parameters {
+        choice(name: 'CLEANUP_LEVEL', choices: ['conservative', 'moderate', 'aggressive'], description: 'Cleanup intensity')
+        booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Preview cleanup actions without executing')
+    }
+    stages {
+        stage('Automated Space Cleanup') {
+            steps {
+                script {
+                    def cleanupActions = []
+                    
+                    // Conservative cleanup
+                    if (params.CLEANUP_LEVEL in ['conservative', 'moderate', 'aggressive']) {
+                        cleanupActions.addAll([
+                            'find ${JENKINS_HOME}/workspace -name "target" -type d -mtime +7',
+                            'find ${JENKINS_HOME}/workspace -name "node_modules" -type d -mtime +3',
+                            'find ${JENKINS_HOME}/workspace -name "*.log" -mtime +14'
+                        ])
+                    }
+                    
+                    // Moderate cleanup
+                    if (params.CLEANUP_LEVEL in ['moderate', 'aggressive']) {
+                        cleanupActions.addAll([
+                            'find ${JENKINS_HOME}/jobs/*/builds -name "log" -mtime +30',
+                            'find ${JENKINS_HOME}/workspace -type d -empty',
+                            'find ${JENKINS_HOME}/tmp -name "*" -mtime +1'
+                        ])
+                    }
+                    
+                    // Aggressive cleanup
+                    if (params.CLEANUP_LEVEL == 'aggressive') {
+                        cleanupActions.addAll([
+                            'find ${JENKINS_HOME}/jobs/*/builds/*/archive -name "*" -mtime +7',
+                            'find ${JENKINS_HOME}/workspace -name ".git" -type d -exec du -sh {} \\; | sort -hr | head -10',
+                            'find ${JENKINS_HOME}/fingerprints -name "*.xml" -mtime +7'
+                        ])
+                    }
+                    
+                    // Execute or preview cleanup actions
+                    cleanupActions.each { action ->
+                        if (params.DRY_RUN) {
+                            echo "DRY RUN: ${action}"
+                            sh "${action} | head -20"
+                        } else {
+                            echo "EXECUTING: ${action}"
+                            sh "${action} -delete"
+                        }
+                    }
+                    
+                    // Report space savings
+                    if (!params.DRY_RUN) {
+                        def spaceAfter = sh(
+                            script: "df -h ${JENKINS_HOME} | awk 'NR==2 {print \$4}'",
+                            returnStdout: true
+                        ).trim()
+                        echo "Available space after cleanup: ${spaceAfter}"
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,106 @@
+Advanced Build History and Artifact Management
+Intelligent Build Retention Policies
+Implementing sophisticated build retention strategies balances the need for historical data with disk space constraints.
+
+Tiered Retention Strategy applies different retention policies based on build importance, branch type, and artifact significance:
+
+groovy
+pipeline {
+    agent any
+    options {
+        buildDiscarder(logRotator(
+            numToKeepStr: '50',
+            daysToKeepStr: '30',
+            artifactNumToKeepStr: '10',
+            artifactDaysToKeepStr: '7'
+        ))
+    }
+    stages {
+        stage('Build with Tiered Retention') {
+            steps {
+                script {
+                    // Branch-specific retention logic
+                    if (env.BRANCH_NAME == 'main') {
+                        currentBuild.keepLog = true
+                        echo "Preserving build log for main branch"
+                    } else if (env.BRANCH_NAME.startsWith('release/')) {
+                        // Keep release builds longer
+                        properties([
+                            buildDiscarder(logRotator(
+                                numToKeepStr: '100',
+                                daysToKeepStr: '90',
+                                artifactNumToKeepStr: '25',
+                                artifactDaysToKeepStr: '30'
+                            ))
+                        ])
+                    } else {
+                        // Aggressive cleanup for feature branches
+                        properties([
+                            buildDiscarder(logRotator(
+                                numToKeepStr: '10',
+                                daysToKeepStr: '7',
+                                artifactNumToKeepStr: '3',
+                                artifactDaysToKeepStr: '2'
+                            ))
+                        ])
+                    }
+                }
+                
+                sh 'mvn clean package'
+            }
+        }
+    }
+}
+Conditional Artifact Archival selectively preserves build artifacts based on quality gates, test results, and deployment success:
+
+groovy
+pipeline {
+    agent any
+    stages {
+        stage('Build and Test') {
+            steps {
+                sh 'mvn clean package'
+                sh 'mvn test'
+                
+                // Publish test results
+                publishTestResults testResultsPattern: 'target/surefire-reports/*.xml'
+            }
+        }
+        stage('Quality Gate') {
+            steps {
+                script {
+                    def testResults = currentBuild.testResultAction
+                    def qualityPassed = testResults?.failCount == 0
+                    
+                    if (qualityPassed && env.BRANCH_NAME == 'main') {
+                        // Archive artifacts only for successful main branch builds
+                        archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+                        echo "Artifacts archived for successful main branch build"
+                    } else if (qualityPassed) {
+                        // Create temporary artifact for successful feature builds
+                        stash name: 'temp-artifacts', includes: 'target/*.jar'
+                        echo "Temporary artifacts stashed for feature branch"
+                    } else {
+                        echo "Quality gate failed - no artifacts archived"
+                    }
+                }
+            }
+        }
+    }
+    post {
+        failure {
+            // Clean up on failure to save space
+            cleanWs(deleteDirs: true)
+        }
+        success {
+            script {
+                // Conditional cleanup based on branch
+                if (env.BRANCH_NAME != 'main' && env.BRANCH_NAME != 'develop') {
+                    cleanWs(patterns: [
+                        [pattern: 'target/**', type: 'INCLUDE']
+                    ])
+                }
+            }
+        }
+    }
+}

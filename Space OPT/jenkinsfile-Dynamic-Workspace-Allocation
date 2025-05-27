@@ -1,0 +1,100 @@
+Dynamic Workspace Allocation
+Optimizing workspace allocation strategies reduces overall disk usage while maintaining build isolation and performance.
+
+Shared Workspace Configuration enables multiple related jobs to share common workspace areas for dependencies and cached artifacts:
+
+groovy
+pipeline {
+    agent {
+        label 'build-node'
+    }
+    environment {
+        SHARED_CACHE = '/opt/jenkins-cache'
+        MAVEN_REPO = "${SHARED_CACHE}/maven-repository"
+        NPM_CACHE = "${SHARED_CACHE}/npm-cache"
+    }
+    stages {
+        stage('Setup Shared Resources') {
+            steps {
+                script {
+                    // Create shared cache directories
+                    sh "mkdir -p ${MAVEN_REPO} ${NPM_CACHE}"
+                    
+                    // Configure Maven to use shared repository
+                    sh """
+                        cat > settings.xml << EOF
+                        <settings>
+                            <localRepository>${MAVEN_REPO}</localRepository>
+                        </settings>
+                        EOF
+                    """
+                    
+                    // Configure npm cache
+                    sh "npm config set cache ${NPM_CACHE}"
+                }
+            }
+        }
+        stage('Build with Shared Cache') {
+            steps {
+                sh 'mvn -s settings.xml clean package'
+                sh 'npm install'
+            }
+        }
+    }
+    post {
+        always {
+            // Clean only project-specific files
+            cleanWs(patterns: [
+                [pattern: 'target/**', type: 'INCLUDE'],
+                [pattern: 'node_modules/**', type: 'INCLUDE'],
+                [pattern: 'settings.xml', type: 'INCLUDE']
+            ])
+        }
+    }
+}
+Ephemeral Workspace Strategy utilizes temporary storage for build operations while preserving only essential outputs:
+
+groovy
+pipeline {
+    agent {
+        kubernetes {
+            yaml """
+                apiVersion: v1
+                kind: Pod
+                spec:
+                  containers:
+                  - name: build-container
+                    image: maven:3.8.6-openjdk-17
+                    volumeMounts:
+                    - name: ephemeral-storage
+                      mountPath: /tmp/build
+                    - name: cache-volume
+                      mountPath: /root/.m2
+                  volumes:
+                  - name: ephemeral-storage
+                    emptyDir:
+                      sizeLimit: 2Gi
+                  - name: cache-volume
+                    persistentVolumeClaim:
+                      claimName: maven-cache-pvc
+            """
+        }
+    }
+    stages {
+        stage('Ephemeral Build') {
+            steps {
+                // Use ephemeral storage for build operations
+                sh 'cp -r . /tmp/build/'
+                
+                dir('/tmp/build') {
+                    sh 'mvn clean package'
+                    
+                    // Copy only essential artifacts back
+                    sh 'cp target/*.jar ${WORKSPACE}/'
+                }
+                
+                // Ephemeral storage automatically cleaned up
+            }
+        }
+    }
+}

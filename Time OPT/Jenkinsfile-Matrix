@@ -1,0 +1,46 @@
+Matrix Builds provide another powerful parallelization technique for scenarios requiring testing across multiple environments, platforms, or configurations. Jenkins matrix builds automatically generate parallel stages based on defined parameters:
+
+groovy
+pipeline {
+    agent none
+    stages {
+        stage('Multi-Platform Build') {
+            matrix {
+                axes {
+                    axis {
+                        name 'PLATFORM'
+                        values 'linux', 'windows', 'macos'
+                    }
+                    axis {
+                        name 'JAVA_VERSION'
+                        values '11', '17', '21'
+                    }
+                }
+                excludes {
+                    exclude {
+                        axis {
+                            name 'PLATFORM'
+                            values 'macos'
+                        }
+                        axis {
+                            name 'JAVA_VERSION'
+                            values '11'
+                        }
+                    }
+                }
+                stages {
+                    stage('Build') {
+                        steps {
+                            sh "mvn clean compile -Djava.version=${JAVA_VERSION}"
+                        }
+                    }
+                    stage('Test') {
+                        steps {
+                            sh "mvn test -Djava.version=${JAVA_VERSION}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

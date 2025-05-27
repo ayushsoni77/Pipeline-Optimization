@@ -1,0 +1,151 @@
+Comprehensive Workspace Management Strategy
+Automated Workspace Cleanup
+Implementing systematic workspace cleanup mechanisms forms the foundation of effective space optimization in Jenkins pipelines. Modern Jenkins deployments should leverage both built-in cleanup capabilities and custom cleanup strategies tailored to specific project requirements.
+
+Declarative Cleanup Configuration provides the most straightforward approach to workspace management through pipeline-level cleanup directives:
+
+groovy
+pipeline {
+    agent any
+    options {
+        // Automatically clean workspace before build
+        skipDefaultCheckout()
+        // Clean workspace after build completion
+        disableConcurrentBuilds()
+    }
+    stages {
+        stage('Checkout and Clean') {
+            steps {
+                // Clean workspace before checkout
+                cleanWs()
+                
+                // Perform selective checkout
+                checkout scm
+                
+                // Clean specific directories
+                sh 'find . -name "*.tmp" -delete'
+                sh 'find . -name "node_modules" -type d -exec rm -rf {} + 2>/dev/null || true'
+            }
+        }
+        stage('Build with Cleanup') {
+            steps {
+                sh 'mvn clean package'
+                
+                // Clean intermediate build files
+                sh 'mvn clean'
+                
+                // Remove unnecessary artifacts
+                sh 'rm -rf target/classes target/test-classes'
+            }
+        }
+    }
+    post {
+        always {
+            // Comprehensive workspace cleanup
+            cleanWs(
+                cleanWhenAborted: true,
+                cleanWhenFailure: true,
+                cleanWhenNotBuilt: true,
+                cleanWhenSuccess: true,
+                cleanWhenUnstable: true,
+                deleteDirs: true,
+                disableDeferredWipeout: false,
+                notFailBuild: true,
+                patterns: [
+                    [pattern: 'target/**', type: 'INCLUDE'],
+                    [pattern: 'node_modules/**', type: 'INCLUDE'],
+                    [pattern: '.gradle/**', type: 'INCLUDE'],
+                    [pattern: 'build/**', type: 'INCLUDE']
+                ]
+            )
+        }
+    }
+}
+Selective Workspace Preservation enables retention of essential files while removing unnecessary build artifacts and temporary data:
+
+groovy
+pipeline {
+    agent any
+    stages {
+        stage('Build with Selective Cleanup') {
+            steps {
+                sh 'mvn clean package'
+                
+                // Preserve essential artifacts
+                stash name: 'production-artifacts', includes: 'target/*.jar,target/*.war'
+                stash name: 'test-reports', includes: 'target/surefire-reports/**'
+                
+                // Clean everything except preserved artifacts
+                cleanWs(
+                    patterns: [
+                        [pattern: 'target/*.jar', type: 'EXCLUDE'],
+                        [pattern: 'target/*.war', type: 'EXCLUDE'],
+                        [pattern: 'target/surefire-reports/**', type: 'EXCLUDE']
+                    ]
+                )
+            }
+        }
+        stage('Deploy') {
+            steps {
+                // Restore only necessary artifacts
+                unstash 'production-artifacts'
+                
+                sh 'deploy-application.sh'
+                
+                // Clean deployment artifacts after use
+                sh 'rm -f target/*.jar target/*.war'
+            }
+        }
+    }
+}
+Conditional Cleanup Strategies implement intelligent cleanup logic based on build outcomes, branch types, and project-specific requirements:
+
+groovy
+pipeline {
+    agent any
+    parameters {
+        booleanParam(name: 'DEEP_CLEAN', defaultValue: false, description: 'Perform deep workspace cleanup')
+        choice(name: 'CLEANUP_LEVEL', choices: ['minimal', 'standard', 'aggressive'], description: 'Cleanup intensity')
+    }
+    stages {
+        stage('Conditional Cleanup') {
+            steps {
+                script {
+                    // Branch-specific cleanup logic
+                    if (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'develop') {
+                        echo "Performing standard cleanup for main branches"
+                        cleanWs(patterns: [
+                            [pattern: 'target/**', type: 'INCLUDE'],
+                            [pattern: 'build/**', type: 'INCLUDE']
+                        ])
+                    } else if (env.BRANCH_NAME.startsWith('feature/')) {
+                        echo "Performing aggressive cleanup for feature branches"
+                        cleanWs(deleteDirs: true)
+                    }
+                    
+                    // Parameter-driven cleanup
+                    if (params.DEEP_CLEAN) {
+                        sh '''
+                            find . -name "*.log" -delete
+                            find . -name "*.tmp" -delete
+                            find . -type d -name ".cache" -exec rm -rf {} + 2>/dev/null || true
+                        '''
+                    }
+                    
+                    // Cleanup level implementation
+                    switch(params.CLEANUP_LEVEL) {
+                        case 'aggressive':
+                            sh 'git clean -fdx'
+                            break
+                        case 'standard':
+                            sh 'mvn clean'
+                            break
+                        case 'minimal':
+                            sh 'rm -rf target/classes'
+                            break
+                    }
+                }
+            }
+        }
+    }
+}

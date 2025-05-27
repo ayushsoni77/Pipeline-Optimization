@@ -1,0 +1,45 @@
+Build Artifact Management
+Efficient artifact management reduces storage overhead and improves build performance through intelligent artifact promotion and cleanup strategies:
+
+groovy
+pipeline {
+    agent any
+    options {
+        buildDiscarder(logRotator(
+            numToKeepStr: '10',
+            artifactNumToKeepStr: '5'
+        ))
+    }
+    stages {
+        stage('Build and Package') {
+            steps {
+                sh 'mvn clean package'
+                
+                // Archive only essential artifacts
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+                
+                // Stash artifacts for downstream jobs
+                stash name: 'application-jar', includes: 'target/*.jar'
+            }
+        }
+        stage('Artifact Promotion') {
+            when { branch 'main' }
+            steps {
+                script {
+                    // Promote artifacts to artifact repository
+                    sh 'mvn deploy -DskipTests'
+                    
+                    // Tag successful builds
+                    sh "git tag build-${env.BUILD_NUMBER}"
+                    sh "git push origin build-${env.BUILD_NUMBER}"
+                }
+            }
+        }
+    }
+    post {
+        always {
+            // Clean workspace to free disk space
+            cleanWs()
+        }
+    }
+}

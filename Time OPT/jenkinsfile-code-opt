@@ -1,0 +1,117 @@
+Pipeline Code Optimization
+Beyond infrastructure improvements, optimizing the pipeline code itself can yield significant performance gains through more efficient resource usage and reduced overhead.
+
+Conditional Execution prevents unnecessary stage execution based on specific criteria, reducing overall pipeline time:
+
+groovy
+pipeline {
+    agent any
+    parameters {
+        booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip test execution')
+        choice(name: 'DEPLOYMENT_ENV', choices: ['dev', 'staging', 'prod'], description: 'Target environment')
+    }
+    stages {
+        stage('Build') {
+            steps {
+                sh 'mvn clean compile'
+            }
+        }
+        stage('Test') {
+            when {
+                not { params.SKIP_TESTS }
+            }
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        sh 'mvn test'
+                    }
+                }
+                stage('Integration Tests') {
+                    when {
+                        anyOf {
+                            branch 'main'
+                            branch 'develop'
+                            changeRequest()
+                        }
+                    }
+                    steps {
+                        sh 'mvn verify -Pintegration'
+                    }
+                }
+            }
+        }
+        stage('Deploy to Dev') {
+            when {
+                allOf {
+                    params.DEPLOYMENT_ENV == 'dev'
+                    branch 'develop'
+                }
+            }
+            steps {
+                sh 'deploy-to-dev.sh'
+            }
+        }
+        stage('Deploy to Production') {
+            when {
+                allOf {
+                    params.DEPLOYMENT_ENV == 'prod'
+                    branch 'main'
+                    buildingTag()
+                }
+            }
+            steps {
+                sh 'deploy-to-prod.sh'
+            }
+        }
+    }
+}
+Shared Libraries eliminate code duplication and provide reusable pipeline components that can be optimized once and used across multiple projects:
+
+groovy
+// vars/optimizedBuild.groovy
+def call(Map config) {
+    pipeline {
+        agent none
+        stages {
+            stage('Parallel Build') {
+                parallel {
+                    stage('Compile') {
+                        agent { label config.buildAgent ?: 'default' }
+                        steps {
+                            script {
+                                if (config.cacheEnabled) {
+                                    cache(maxCacheSize: 250, caches: [
+                                        arbitraryFileCache(path: config.cachePath, cacheValidityDecidingFile: config.cacheKey)
+                                    ]) {
+                                        sh config.buildCommand
+                                    }
+                                } else {
+                                    sh config.buildCommand
+                                }
+                            }
+                        }
+                    }
+                    stage('Test') {
+                        when { expression { config.runTests } }
+                        agent { label config.testAgent ?: 'default' }
+                        steps {
+                            sh config.testCommand
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Usage in Jenkinsfile
+optimizedBuild([
+    buildAgent: 'maven-agent',
+    testAgent: 'test-agent',
+    buildCommand: 'mvn clean package',
+    testCommand: 'mvn test',
+    runTests: true,
+    cacheEnabled: true,
+    cachePath: '.m2/repository',
+    cacheKey: 'pom.xml'
+])

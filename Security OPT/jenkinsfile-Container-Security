@@ -1,0 +1,198 @@
+Container Security
+Implementing container-specific security measures protects containerized Jenkins deployments and build environments.
+
+Container Image Security Scanning validates container images for vulnerabilities and misconfigurations:
+
+groovy
+pipeline {
+    agent any
+    stages {
+        stage('Container Security Scanning') {
+            steps {
+                script {
+                    // Build application container
+                    sh 'docker build -t myapp:${BUILD_NUMBER} .'
+                    
+                    // Scan container image with multiple tools
+                    parallel([
+                        'Trivy Scan': {
+                            sh '''
+                                trivy image \\
+                                    --format json \\
+                                    --output trivy-results.json \\
+                                    --severity HIGH,CRITICAL \\
+                                    myapp:${BUILD_NUMBER}
+                            '''
+                            
+                            def trivyResults = readJSON file: 'trivy-results.json'
+                            def criticalVulns = trivyResults.Results?.findAll { result ->
+                                result.Vulnerabilities?.any { vuln -> vuln.Severity == 'CRITICAL' }
+                            }
+                            
+                            if (criticalVulns?.size() > 0) {
+                                error("Critical vulnerabilities found in container image")
+                            }
+                        },
+                        'Hadolint Dockerfile Scan': {
+                            sh '''
+                                hadolint Dockerfile \\
+                                    --format json \\
+                                    --failure-threshold error > hadolint-results.json || true
+                            '''
+                            
+                            def hadolintResults = readJSON file: 'hadolint-results.json'
+                            def errorFindings = hadolintResults.findAll { it.level == 'error' }
+                            
+                            if (errorFindings.size() > 0) {
+                                currentBuild.result = 'UNSTABLE'
+                                echo "Dockerfile security issues found: ${errorFindings.size()}"
+                            }
+                        },
+                        'Dockle Configuration Scan': {
+                            sh '''
+                                dockle \\
+                                    --format json \\
+                                    --output dockle-results.json \\
+                                    myapp:${BUILD_NUMBER}
+                            '''
+                        }
+                    ])
+                }
+            }
+        }
+        stage('Runtime Security Configuration') {
+            steps {
+                script {
+                    // Generate secure container runtime configuration
+                    def securityContext = generateSecureSecurityContext()
+                    
+                    writeFile file: 'secure-deployment.yaml', text: """
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: myapp
+        image: myapp:${env.BUILD_NUMBER}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 10001
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_BIND_SERVICE
+        resources:
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+                    """
+                    
+                    // Validate security configuration
+                    sh 'kubeval secure-deployment.yaml'
+                    sh 'conftest verify --policy security-policies/ secure-deployment.yaml'
+                }
+            }
+        }
+        stage('Container Runtime Security') {
+            steps {
+                script {
+                    // Deploy with security monitoring
+                    sh 'kubectl apply -f secure-deployment.yaml'
+                    
+                    // Wait for deployment
+                    sh 'kubectl rollout status deployment/myapp --timeout=300s'
+                    
+                    // Validate runtime security
+                    validateRuntimeSecurity()
+                    
+                    // Set up runtime monitoring
+                    setupRuntimeMonitoring()
+                }
+            }
+        }
+    }
+    post {
+        always {
+            // Archive security scan results
+            archiveArtifacts artifacts: 'trivy-results.json, hadolint-results.json, dockle-results.json', allowEmptyArchive: true
+            
+            // Clean up test deployment
+            sh 'kubectl delete -f secure-deployment.yaml --ignore-not-found=true'
+        }
+    }
+}
+
+def generateSecureSecurityContext() {
+    return [
+        runAsNonRoot: true,
+        runAsUser: 10001,
+        readOnlyRootFilesystem: true,
+        allowPrivilegeEscalation: false
+    ]
+}
+
+def validateRuntimeSecurity() {
+    // Validate container runtime security
+    sh '''
+        # Check container is running as non-root
+        kubectl exec deployment/myapp -- id
+        
+        # Verify read-only filesystem
+        kubectl exec deployment/myapp -- touch /test-file 2>&1 | grep -q "Read-only file system" || exit 1
+        
+        # Check security capabilities
+        kubectl exec deployment/myapp -- cat /proc/1/status | grep Cap
+    '''
+}
+
+def setupRuntimeMonitoring() {
+    // Configure runtime security monitoring
+    sh '''
+        # Deploy Falco rules for runtime monitoring
+        kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falco-rules
+data:
+  custom_rules.yaml: |
+    - rule: Unexpected Network Activity
+      desc: Detect unexpected network connections
+      condition: >
+        spawned_process and container.name = "myapp" and
+        (proc.name in (nc, ncat, netcat, wget, curl) or
+         fd.sport_l in (22, 23, 21, 3389))
+      output: >
+        Unexpected network activity in container
+        (user=%user.name command=%proc.cmdline container=%container.name)
+      priority: WARNING
+EOF
+    '''
+}

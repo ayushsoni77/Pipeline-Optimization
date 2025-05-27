@@ -1,0 +1,163 @@
+Dynamic Application Security Testing (DAST)
+Implementing runtime security testing identifies vulnerabilities in deployed applications.
+
+Automated DAST Integration performs security testing against running applications:
+
+groovy
+pipeline {
+    agent any
+    stages {
+        stage('Application Deployment') {
+            steps {
+                // Deploy application to testing environment
+                sh 'docker-compose up -d'
+                
+                // Wait for application to be ready
+                script {
+                    timeout(time: 5, unit: 'MINUTES') {
+                        waitUntil {
+                            script {
+                                def response = sh(
+                                    script: 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health',
+                                    returnStdout: true
+                                ).trim()
+                                return response == '200'
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        stage('Dynamic Security Testing') {
+            parallel {
+                stage('OWASP ZAP Scan') {
+                    steps {
+                        script {
+                            // Start ZAP daemon
+                            sh 'zap.sh -daemon -port 8090 -config api.disablekey=true &'
+                            
+                            // Wait for ZAP to start
+                            sleep(30)
+                            
+                            // Spider the application
+                            sh '''
+                                curl "http://localhost:8090/JSON/spider/action/scan/?url=http://localhost:8080&maxChildren=10"
+                                
+                                # Wait for spider to complete
+                                while [ $(curl -s "http://localhost:8090/JSON/spider/view/status/" | jq -r '.status') != "100" ]; do
+                                    sleep 5
+                                done
+                            '''
+                            
+                            // Active security scan
+                            sh '''
+                                curl "http://localhost:8090/JSON/ascan/action/scan/?url=http://localhost:8080&recurse=true"
+                                
+                                # Wait for active scan to complete
+                                while [ $(curl -s "http://localhost:8090/JSON/ascan/view/status/" | jq -r '.status') != "100" ]; do
+                                    sleep 10
+                                done
+                            '''
+                            
+                            // Generate reports
+                            sh '''
+                                curl "http://localhost:8090/JSON/core/view/htmlreport/" > zap-report.html
+                                curl "http://localhost:8090/JSON/core/view/jsonreport/" > zap-report.json
+                            '''
+                            
+                            // Analyze results
+                            def zapResults = readJSON file: 'zap-report.json'
+                            def highRiskAlerts = zapResults.site[0].alerts.findAll { it.riskdesc.startsWith('High') }
+                            
+                            if (highRiskAlerts.size() > 0) {
+                                currentBuild.result = 'FAILURE'
+                                error("OWASP ZAP found ${highRiskAlerts.size()} high-risk security vulnerabilities")
+                            }
+                        }
+                    }
+                }
+                stage('Nuclei Vulnerability Scan') {
+                    steps {
+                        sh '''
+                            nuclei \\
+                                -target http://localhost:8080 \\
+                                -json \\
+                                -output nuclei-results.json \\
+                                -severity critical,high,medium
+                        '''
+                        
+                        script {
+                            if (fileExists('nuclei-results.json')) {
+                                def nucleiResults = readFile('nuclei-results.json').split('\n').findAll { it.trim() }
+                                def criticalFindings = nucleiResults.findAll { line ->
+                                    def result = readJSON text: line
+                                    return result.info?.severity == 'critical'
+                                }
+                                
+                                if (criticalFindings.size() > 0) {
+                                    currentBuild.result = 'FAILURE'
+                                    error("Nuclei found ${criticalFindings.size()} critical vulnerabilities")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        stage('Security Baseline Validation') {
+            steps {
+                script {
+                    // Validate security headers
+                    def securityHeaders = sh(
+                        script: '''
+                            curl -I http://localhost:8080 | grep -E "(X-Frame-Options|X-Content-Type-Options|X-XSS-Protection|Strict-Transport-Security|Content-Security-Policy)"
+                        ''',
+                        returnStdout: true
+                    ).trim()
+                    
+                    def requiredHeaders = [
+                        'X-Frame-Options',
+                        'X-Content-Type-Options',
+                        'X-XSS-Protection',
+                        'Strict-Transport-Security'
+                    ]
+                    
+                    requiredHeaders.each { header ->
+                        if (!securityHeaders.contains(header)) {
+                            currentBuild.result = 'UNSTABLE'
+                            echo "WARNING: Missing security header: ${header}"
+                        }
+                    }
+                    
+                    // Validate SSL/TLS configuration
+                    sh '''
+                        testssl.sh \\
+                            --jsonfile testssl-results.json \\
+                            --severity HIGH \\
+                            https://localhost:8443 || true
+                    '''
+                }
+            }
+        }
+    }
+    post {
+        always {
+            // Stop test environment
+            sh 'docker-compose down'
+            sh 'pkill -f zap.sh || true'
+            
+            // Archive security test results
+            archiveArtifacts artifacts: 'zap-report.html, zap-report.json, nuclei-results.json, testssl-results.json', allowEmptyArchive: true
+            
+            // Publish DAST reports
+            publishHTML([
+                allowMissing: false,
+                alwaysLinkToLastBuild: true,
+                keepAll: true,
+                reportDir: '.',
+                reportFiles: 'zap-report.html',
+                reportName: 'OWASP ZAP Security Report'
+            ])
+        }
+    }
+}

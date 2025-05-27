@@ -1,0 +1,58 @@
+Advanced Optimization Techniques
+Incremental Builds and Change Detection
+Implementing incremental build strategies can dramatically reduce build times by processing only changed components:
+
+groovy
+pipeline {
+    agent any
+    stages {
+        stage('Change Detection') {
+            steps {
+                script {
+                    def changedFiles = sh(
+                        script: "git diff --name-only HEAD~1 HEAD",
+                        returnStdout: true
+                    ).trim().split('\n')
+                    
+                    env.BACKEND_CHANGED = changedFiles.any { it.startsWith('backend/') }
+                    env.FRONTEND_CHANGED = changedFiles.any { it.startsWith('frontend/') }
+                    env.DOCS_CHANGED = changedFiles.any { it.startsWith('docs/') }
+                }
+            }
+        }
+        stage('Conditional Builds') {
+            parallel {
+                stage('Backend Build') {
+                    when { 
+                        environment name: 'BACKEND_CHANGED', value: 'true'
+                    }
+                    steps {
+                        dir('backend') {
+                            sh 'mvn clean package'
+                        }
+                    }
+                }
+                stage('Frontend Build') {
+                    when { 
+                        environment name: 'FRONTEND_CHANGED', value: 'true'
+                    }
+                    steps {
+                        dir('frontend') {
+                            sh 'npm ci && npm run build'
+                        }
+                    }
+                }
+                stage('Documentation Build') {
+                    when { 
+                        environment name: 'DOCS_CHANGED', value: 'true'
+                    }
+                    steps {
+                        dir('docs') {
+                            sh 'mkdocs build'
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

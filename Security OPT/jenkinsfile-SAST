@@ -1,0 +1,150 @@
+Code Security and Vulnerability Management
+Static Application Security Testing (SAST)
+Implementing comprehensive static analysis identifies security vulnerabilities in source code before deployment.
+
+Multi-Tool SAST Integration combines multiple security analysis tools for comprehensive coverage:
+
+groovy
+pipeline {
+    agent any
+    stages {
+        stage('Static Security Analysis') {
+            parallel {
+                stage('SonarQube Security Analysis') {
+                    steps {
+                        script {
+                            withSonarQubeEnv('SonarQube-Server') {
+                                sh '''
+                                    mvn sonar:sonar \\
+                                        -Dsonar.projectKey=myapp \\
+                                        -Dsonar.sources=src/main \\
+                                        -Dsonar.tests=src/test \\
+                                        -Dsonar.java.binaries=target/classes \\
+                                        -Dsonar.security.hotspots.inheritFromParent=true
+                                '''
+                            }
+                            
+                            // Wait for quality gate results
+                            timeout(time: 10, unit: 'MINUTES') {
+                                def qualityGate = waitForQualityGate()
+                                if (qualityGate.status != 'OK') {
+                                    error("SonarQube quality gate failed: ${qualityGate.status}")
+                                }
+                            }
+                        }
+                    }
+                }
+                stage('OWASP Dependency Check') {
+                    steps {
+                        sh '''
+                            dependency-check \\
+                                --project myapp \\
+                                --scan . \\
+                                --format JSON \\
+                                --format HTML \\
+                                --out dependency-check-report \\
+                                --suppression dependency-check-suppressions.xml
+                        '''
+                        
+                        script {
+                            // Parse dependency check results
+                            def dependencyReport = readJSON file: 'dependency-check-report/dependency-check-report.json'
+                            def vulnerabilities = dependencyReport.dependencies.findAll { 
+                                it.vulnerabilities && it.vulnerabilities.size() > 0 
+                            }
+                            
+                            if (vulnerabilities.size() > 0) {
+                                def highSeverity = vulnerabilities.findAll { dep ->
+                                    dep.vulnerabilities.any { vuln -> vuln.severity == 'HIGH' || vuln.severity == 'CRITICAL' }
+                                }
+                                
+                                if (highSeverity.size() > 0) {
+                                    currentBuild.result = 'FAILURE'
+                                    error("Critical/High severity vulnerabilities found in dependencies")
+                                } else {
+                                    currentBuild.result = 'UNSTABLE'
+                                    echo "Medium/Low severity vulnerabilities found - review required"
+                                }
+                            }
+                        }
+                    }
+                }
+                stage('Semgrep Security Scan') {
+                    steps {
+                        sh '''
+                            semgrep \\
+                                --config=auto \\
+                                --json \\
+                                --output=semgrep-results.json \\
+                                --severity=ERROR \\
+                                --severity=WARNING \\
+                                .
+                        '''
+                        
+                        script {
+                            def semgrepResults = readJSON file: 'semgrep-results.json'
+                            def errorFindings = semgrepResults.results.findAll { it.extra.severity == 'ERROR' }
+                            
+                            if (errorFindings.size() > 0) {
+                                currentBuild.result = 'FAILURE'
+                                error("Semgrep found ${errorFindings.size()} error-level security issues")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        stage('Security Report Consolidation') {
+            steps {
+                script {
+                    // Consolidate security findings from all tools
+                    def consolidatedReport = consolidateSecurityFindings()
+                    
+                    // Generate security dashboard
+                    writeFile file: 'security-dashboard.json', text: groovy.json.JsonBuilder(consolidatedReport).toPrettyString()
+                    
+                    // Send security notifications
+                    if (consolidatedReport.criticalIssues > 0) {
+                        emailext(
+                            subject: "Critical Security Issues Found - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                            body: "Critical security vulnerabilities detected. Review required immediately.",
+                            to: "${env.SECURITY_TEAM_EMAIL}"
+                        )
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            // Archive security reports
+            archiveArtifacts artifacts: 'dependency-check-report/**, semgrep-results.json, security-dashboard.json', allowEmptyArchive: true
+            
+            // Publish security test results
+            publishHTML([
+                allowMissing: false,
+                alwaysLinkToLastBuild: true,
+                keepAll: true,
+                reportDir: 'dependency-check-report',
+                reportFiles: 'dependency-check-report.html',
+                reportName: 'OWASP Dependency Check Report'
+            ])
+        }
+    }
+}
+
+def consolidateSecurityFindings() {
+    def findings = [
+        criticalIssues: 0,
+        highIssues: 0,
+        mediumIssues: 0,
+        lowIssues: 0,
+        tools: []
+    ]
+    
+    // Process SonarQube results
+    // Process dependency check results
+    // Process Semgrep results
+    
+    return findings
+}

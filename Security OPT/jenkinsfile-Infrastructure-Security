@@ -1,0 +1,144 @@
+Infrastructure Security and Hardening
+Jenkins System Hardening
+Implementing comprehensive system-level security controls protects the Jenkins infrastructure from attacks and unauthorized access.
+
+System Configuration Security hardens the underlying Jenkins installation and operating system:
+
+groovy
+pipeline {
+    agent any
+    stages {
+        stage('Security Configuration Validation') {
+            steps {
+                script {
+                    // Validate Jenkins security configuration
+                    def securityConfig = [
+                        'jenkins.security.csrf.protection': true,
+                        'jenkins.security.apiToken': true,
+                        'jenkins.security.QueueItemAuthenticator': true,
+                        'jenkins.security.RemotingCLIEnabled': false
+                    ]
+                    
+                    securityConfig.each { config, expectedValue ->
+                        def actualValue = getJenkinsSecurityConfig(config)
+                        if (actualValue != expectedValue) {
+                            error("Security configuration mismatch: ${config} should be ${expectedValue} but is ${actualValue}")
+                        }
+                    }
+                    
+                    // Validate system hardening
+                    validateSystemHardening()
+                    
+                    // Check for security updates
+                    checkSecurityUpdates()
+                }
+            }
+        }
+        stage('Network Security Validation') {
+            steps {
+                script {
+                    // Validate firewall configuration
+                    def openPorts = sh(
+                        script: 'netstat -tuln | grep LISTEN',
+                        returnStdout: true
+                    ).trim()
+                    
+                    // Check for unnecessary open ports
+                    def allowedPorts = ['22', '80', '443', '8080', '50000']
+                    def suspiciousPorts = findSuspiciousPorts(openPorts, allowedPorts)
+                    
+                    if (suspiciousPorts.size() > 0) {
+                        currentBuild.result = 'UNSTABLE'
+                        echo "WARNING: Suspicious open ports detected: ${suspiciousPorts}"
+                    }
+                    
+                    // Validate SSL/TLS configuration
+                    validateSSLConfiguration()
+                }
+            }
+        }
+        stage('Access Control Validation') {
+            steps {
+                script {
+                    // Validate file permissions
+                    sh '''
+                        # Check Jenkins home directory permissions
+                        find ${JENKINS_HOME} -type f -perm /o+w -ls | head -10
+                        
+                        # Check for world-readable sensitive files
+                        find ${JENKINS_HOME} -name "*.key" -o -name "*.pem" -o -name "secrets*" | xargs ls -la
+                        
+                        # Validate service account permissions
+                        id jenkins
+                        groups jenkins
+                    '''
+                    
+                    // Validate sudo configuration
+                    def sudoConfig = sh(
+                        script: 'sudo -l -U jenkins 2>/dev/null || echo "No sudo access"',
+                        returnStdout: true
+                    ).trim()
+                    
+                    if (sudoConfig.contains('ALL')) {
+                        currentBuild.result = 'UNSTABLE'
+                        echo "WARNING: Jenkins user has excessive sudo privileges"
+                    }
+                }
+            }
+        }
+    }
+}
+
+def getJenkinsSecurityConfig(configKey) {
+    // Implementation to check Jenkins security configuration
+    return true // Placeholder
+}
+
+def validateSystemHardening() {
+    // Check system hardening measures
+    sh '''
+        # Check for security patches
+        if command -v yum >/dev/null 2>&1; then
+            yum check-update --security
+        elif command -v apt >/dev/null 2>&1; then
+            apt list --upgradable | grep -i security
+        fi
+        
+        # Validate SELinux/AppArmor status
+        if command -v getenforce >/dev/null 2>&1; then
+            getenforce
+        elif command -v aa-status >/dev/null 2>&1; then
+            aa-status
+        fi
+        
+        # Check for unnecessary services
+        systemctl list-units --type=service --state=running | grep -E "(telnet|ftp|rsh|rlogin)"
+    '''
+}
+
+def checkSecurityUpdates() {
+    // Check for Jenkins and plugin security updates
+    sh '''
+        # Check Jenkins version against security advisories
+        curl -s https://www.jenkins.io/security/advisories/ | grep -o "Jenkins [0-9.]\\+" | head -5
+        
+        # Check plugin versions (simplified)
+        find ${JENKINS_HOME}/plugins -name "*.jpi" -exec basename {} .jpi \\; | head -10
+    '''
+}
+
+def findSuspiciousPorts(openPorts, allowedPorts) {
+    // Parse netstat output and identify suspicious ports
+    return [] // Placeholder
+}
+
+def validateSSLConfiguration() {
+    // Validate SSL/TLS settings
+    sh '''
+        # Check SSL certificate validity
+        echo | openssl s_client -connect localhost:8443 -servername localhost 2>/dev/null | openssl x509 -noout -dates
+        
+        # Check SSL cipher suites
+        nmap --script ssl-enum-ciphers -p 8443 localhost
+    '''
+}s

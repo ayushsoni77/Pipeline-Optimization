@@ -1,0 +1,766 @@
+Jenkins CI/CD pipelines frequently encounter significant disk space challenges that can severely impact performance, reliability, and operational costs. Space optimization in Jenkins requires a comprehensive approach addressing workspace management, artifact storage, build history retention, and system-level disk utilization strategies.
+
+Understanding Jenkins Space Consumption Patterns
+Jenkins environments typically consume disk space through multiple vectors that compound over time to create storage bottlenecks. Build workspaces accumulate source code, dependencies, intermediate files, and build artifacts across multiple concurrent jobs. Build history preserves logs, artifacts, and metadata for every pipeline execution, creating exponential growth patterns in active development environments. Plugin data stores configuration files, caches, and temporary data that can grow substantially with complex plugin ecosystems.
+
+Workspace Bloat represents one of the most significant space consumption issues in Jenkins deployments. Each job execution creates a dedicated workspace containing the complete source code checkout, downloaded dependencies, compiled artifacts, and temporary files generated during the build process. Without proper cleanup mechanisms, these workspaces persist indefinitely, consuming valuable disk space and creating I/O bottlenecks during subsequent builds.
+
+Build Artifact Accumulation occurs when Jenkins retains build outputs, test reports, deployment packages, and documentation artifacts for extended periods. While artifact retention serves important purposes for debugging and rollback scenarios, uncontrolled accumulation can quickly exhaust available storage capacity, particularly in high-velocity development environments with frequent builds.
+
+Log File Growth becomes problematic when verbose logging configurations generate extensive console output, debug information, and detailed execution traces. Large log files not only consume disk space but also impact Jenkins performance during log parsing, search operations, and web interface rendering.
+
+Comprehensive Workspace Management Strategy
+Automated Workspace Cleanup
+Implementing systematic workspace cleanup mechanisms forms the foundation of effective space optimization in Jenkins pipelines. Modern Jenkins deployments should leverage both built-in cleanup capabilities and custom cleanup strategies tailored to specific project requirements.
+
+Declarative Cleanup Configuration provides the most straightforward approach to workspace management through pipeline-level cleanup directives:
+
+groovy
+pipeline {
+    agent any
+    options {
+        // Automatically clean workspace before build
+        skipDefaultCheckout()
+        // Clean workspace after build completion
+        disableConcurrentBuilds()
+    }
+    stages {
+        stage('Checkout and Clean') {
+            steps {
+                // Clean workspace before checkout
+                cleanWs()
+                
+                // Perform selective checkout
+                checkout scm
+                
+                // Clean specific directories
+                sh 'find . -name "*.tmp" -delete'
+                sh 'find . -name "node_modules" -type d -exec rm -rf {} + 2>/dev/null || true'
+            }
+        }
+        stage('Build with Cleanup') {
+            steps {
+                sh 'mvn clean package'
+                
+                // Clean intermediate build files
+                sh 'mvn clean'
+                
+                // Remove unnecessary artifacts
+                sh 'rm -rf target/classes target/test-classes'
+            }
+        }
+    }
+    post {
+        always {
+            // Comprehensive workspace cleanup
+            cleanWs(
+                cleanWhenAborted: true,
+                cleanWhenFailure: true,
+                cleanWhenNotBuilt: true,
+                cleanWhenSuccess: true,
+                cleanWhenUnstable: true,
+                deleteDirs: true,
+                disableDeferredWipeout: false,
+                notFailBuild: true,
+                patterns: [
+                    [pattern: 'target/**', type: 'INCLUDE'],
+                    [pattern: 'node_modules/**', type: 'INCLUDE'],
+                    [pattern: '.gradle/**', type: 'INCLUDE'],
+                    [pattern: 'build/**', type: 'INCLUDE']
+                ]
+            )
+        }
+    }
+}
+Selective Workspace Preservation enables retention of essential files while removing unnecessary build artifacts and temporary data:
+
+groovy
+pipeline {
+    agent any
+    stages {
+        stage('Build with Selective Cleanup') {
+            steps {
+                sh 'mvn clean package'
+                
+                // Preserve essential artifacts
+                stash name: 'production-artifacts', includes: 'target/*.jar,target/*.war'
+                stash name: 'test-reports', includes: 'target/surefire-reports/**'
+                
+                // Clean everything except preserved artifacts
+                cleanWs(
+                    patterns: [
+                        [pattern: 'target/*.jar', type: 'EXCLUDE'],
+                        [pattern: 'target/*.war', type: 'EXCLUDE'],
+                        [pattern: 'target/surefire-reports/**', type: 'EXCLUDE']
+                    ]
+                )
+            }
+        }
+        stage('Deploy') {
+            steps {
+                // Restore only necessary artifacts
+                unstash 'production-artifacts'
+                
+                sh 'deploy-application.sh'
+                
+                // Clean deployment artifacts after use
+                sh 'rm -f target/*.jar target/*.war'
+            }
+        }
+    }
+}
+Conditional Cleanup Strategies implement intelligent cleanup logic based on build outcomes, branch types, and project-specific requirements:
+
+groovy
+pipeline {
+    agent any
+    parameters {
+        booleanParam(name: 'DEEP_CLEAN', defaultValue: false, description: 'Perform deep workspace cleanup')
+        choice(name: 'CLEANUP_LEVEL', choices: ['minimal', 'standard', 'aggressive'], description: 'Cleanup intensity')
+    }
+    stages {
+        stage('Conditional Cleanup') {
+            steps {
+                script {
+                    // Branch-specific cleanup logic
+                    if (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'develop') {
+                        echo "Performing standard cleanup for main branches"
+                        cleanWs(patterns: [
+                            [pattern: 'target/**', type: 'INCLUDE'],
+                            [pattern: 'build/**', type: 'INCLUDE']
+                        ])
+                    } else if (env.BRANCH_NAME.startsWith('feature/')) {
+                        echo "Performing aggressive cleanup for feature branches"
+                        cleanWs(deleteDirs: true)
+                    }
+                    
+                    // Parameter-driven cleanup
+                    if (params.DEEP_CLEAN) {
+                        sh '''
+                            find . -name "*.log" -delete
+                            find . -name "*.tmp" -delete
+                            find . -type d -name ".cache" -exec rm -rf {} + 2>/dev/null || true
+                        '''
+                    }
+                    
+                    // Cleanup level implementation
+                    switch(params.CLEANUP_LEVEL) {
+                        case 'aggressive':
+                            sh 'git clean -fdx'
+                            break
+                        case 'standard':
+                            sh 'mvn clean'
+                            break
+                        case 'minimal':
+                            sh 'rm -rf target/classes'
+                            break
+                    }
+                }
+            }
+        }
+    }
+}
+Dynamic Workspace Allocation
+Optimizing workspace allocation strategies reduces overall disk usage while maintaining build isolation and performance.
+
+Shared Workspace Configuration enables multiple related jobs to share common workspace areas for dependencies and cached artifacts:
+
+groovy
+pipeline {
+    agent {
+        label 'build-node'
+    }
+    environment {
+        SHARED_CACHE = '/opt/jenkins-cache'
+        MAVEN_REPO = "${SHARED_CACHE}/maven-repository"
+        NPM_CACHE = "${SHARED_CACHE}/npm-cache"
+    }
+    stages {
+        stage('Setup Shared Resources') {
+            steps {
+                script {
+                    // Create shared cache directories
+                    sh "mkdir -p ${MAVEN_REPO} ${NPM_CACHE}"
+                    
+                    // Configure Maven to use shared repository
+                    sh """
+                        cat > settings.xml << EOF
+                        <settings>
+                            <localRepository>${MAVEN_REPO}</localRepository>
+                        </settings>
+                        EOF
+                    """
+                    
+                    // Configure npm cache
+                    sh "npm config set cache ${NPM_CACHE}"
+                }
+            }
+        }
+        stage('Build with Shared Cache') {
+            steps {
+                sh 'mvn -s settings.xml clean package'
+                sh 'npm install'
+            }
+        }
+    }
+    post {
+        always {
+            // Clean only project-specific files
+            cleanWs(patterns: [
+                [pattern: 'target/**', type: 'INCLUDE'],
+                [pattern: 'node_modules/**', type: 'INCLUDE'],
+                [pattern: 'settings.xml', type: 'INCLUDE']
+            ])
+        }
+    }
+}
+Ephemeral Workspace Strategy utilizes temporary storage for build operations while preserving only essential outputs:
+
+groovy
+pipeline {
+    agent {
+        kubernetes {
+            yaml """
+                apiVersion: v1
+                kind: Pod
+                spec:
+                  containers:
+                  - name: build-container
+                    image: maven:3.8.6-openjdk-17
+                    volumeMounts:
+                    - name: ephemeral-storage
+                      mountPath: /tmp/build
+                    - name: cache-volume
+                      mountPath: /root/.m2
+                  volumes:
+                  - name: ephemeral-storage
+                    emptyDir:
+                      sizeLimit: 2Gi
+                  - name: cache-volume
+                    persistentVolumeClaim:
+                      claimName: maven-cache-pvc
+            """
+        }
+    }
+    stages {
+        stage('Ephemeral Build') {
+            steps {
+                // Use ephemeral storage for build operations
+                sh 'cp -r . /tmp/build/'
+                
+                dir('/tmp/build') {
+                    sh 'mvn clean package'
+                    
+                    // Copy only essential artifacts back
+                    sh 'cp target/*.jar ${WORKSPACE}/'
+                }
+                
+                // Ephemeral storage automatically cleaned up
+            }
+        }
+    }
+}
+Advanced Build History and Artifact Management
+Intelligent Build Retention Policies
+Implementing sophisticated build retention strategies balances the need for historical data with disk space constraints.
+
+Tiered Retention Strategy applies different retention policies based on build importance, branch type, and artifact significance:
+
+groovy
+pipeline {
+    agent any
+    options {
+        buildDiscarder(logRotator(
+            numToKeepStr: '50',
+            daysToKeepStr: '30',
+            artifactNumToKeepStr: '10',
+            artifactDaysToKeepStr: '7'
+        ))
+    }
+    stages {
+        stage('Build with Tiered Retention') {
+            steps {
+                script {
+                    // Branch-specific retention logic
+                    if (env.BRANCH_NAME == 'main') {
+                        currentBuild.keepLog = true
+                        echo "Preserving build log for main branch"
+                    } else if (env.BRANCH_NAME.startsWith('release/')) {
+                        // Keep release builds longer
+                        properties([
+                            buildDiscarder(logRotator(
+                                numToKeepStr: '100',
+                                daysToKeepStr: '90',
+                                artifactNumToKeepStr: '25',
+                                artifactDaysToKeepStr: '30'
+                            ))
+                        ])
+                    } else {
+                        // Aggressive cleanup for feature branches
+                        properties([
+                            buildDiscarder(logRotator(
+                                numToKeepStr: '10',
+                                daysToKeepStr: '7',
+                                artifactNumToKeepStr: '3',
+                                artifactDaysToKeepStr: '2'
+                            ))
+                        ])
+                    }
+                }
+                
+                sh 'mvn clean package'
+            }
+        }
+    }
+}
+Conditional Artifact Archival selectively preserves build artifacts based on quality gates, test results, and deployment success:
+
+groovy
+pipeline {
+    agent any
+    stages {
+        stage('Build and Test') {
+            steps {
+                sh 'mvn clean package'
+                sh 'mvn test'
+                
+                // Publish test results
+                publishTestResults testResultsPattern: 'target/surefire-reports/*.xml'
+            }
+        }
+        stage('Quality Gate') {
+            steps {
+                script {
+                    def testResults = currentBuild.testResultAction
+                    def qualityPassed = testResults?.failCount == 0
+                    
+                    if (qualityPassed && env.BRANCH_NAME == 'main') {
+                        // Archive artifacts only for successful main branch builds
+                        archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+                        echo "Artifacts archived for successful main branch build"
+                    } else if (qualityPassed) {
+                        // Create temporary artifact for successful feature builds
+                        stash name: 'temp-artifacts', includes: 'target/*.jar'
+                        echo "Temporary artifacts stashed for feature branch"
+                    } else {
+                        echo "Quality gate failed - no artifacts archived"
+                    }
+                }
+            }
+        }
+    }
+    post {
+        failure {
+            // Clean up on failure to save space
+            cleanWs(deleteDirs: true)
+        }
+        success {
+            script {
+                // Conditional cleanup based on branch
+                if (env.BRANCH_NAME != 'main' && env.BRANCH_NAME != 'develop') {
+                    cleanWs(patterns: [
+                        [pattern: 'target/**', type: 'INCLUDE']
+                    ])
+                }
+            }
+        }
+    }
+}
+Artifact Lifecycle Management
+Implementing comprehensive artifact lifecycle management ensures efficient storage utilization while maintaining necessary build outputs for debugging and deployment purposes.
+
+Artifact Promotion Pipeline manages artifact progression through different storage tiers based on stability and usage patterns:
+
+groovy
+pipeline {
+    agent any
+    parameters {
+        choice(name: 'PROMOTION_LEVEL', choices: ['snapshot', 'release-candidate', 'release'], description: 'Artifact promotion level')
+    }
+    stages {
+        stage('Build and Package') {
+            steps {
+                sh 'mvn clean package'
+                
+                script {
+                    def artifactName = "myapp-${env.BUILD_NUMBER}.jar"
+                    def promotionLevel = params.PROMOTION_LEVEL
+                    
+                    switch(promotionLevel) {
+                        case 'snapshot':
+                            // Short-term storage for snapshots
+                            archiveArtifacts artifacts: "target/${artifactName}", allowEmptyArchive: false
+                            currentBuild.description = "Snapshot build - auto-cleanup in 7 days"
+                            break
+                            
+                        case 'release-candidate':
+                            // Medium-term storage for release candidates
+                            archiveArtifacts artifacts: "target/${artifactName}", fingerprint: true
+                            sh "cp target/${artifactName} /opt/artifacts/release-candidates/"
+                            currentBuild.description = "Release candidate - retained for 30 days"
+                            break
+                            
+                        case 'release':
+                            // Long-term storage for releases
+                            archiveArtifacts artifacts: "target/${artifactName}", fingerprint: true
+                            sh "cp target/${artifactName} /opt/artifacts/releases/"
+                            sh "ln -sf /opt/artifacts/releases/${artifactName} /opt/artifacts/releases/latest.jar"
+                            currentBuild.keepLog = true
+                            currentBuild.description = "Release build - permanent retention"
+                            break
+                    }
+                }
+            }
+        }
+        stage('Cleanup Previous Versions') {
+            when {
+                expression { params.PROMOTION_LEVEL == 'release' }
+            }
+            steps {
+                script {
+                    // Clean up old snapshot and RC artifacts when promoting to release
+                    sh '''
+                        find /opt/artifacts/snapshots -name "*.jar" -mtime +7 -delete
+                        find /opt/artifacts/release-candidates -name "*.jar" -mtime +30 -delete
+                    '''
+                }
+            }
+        }
+    }
+}
+Compressed Artifact Storage reduces storage requirements through intelligent compression and deduplication strategies:
+
+groovy
+pipeline {
+    agent any
+    stages {
+        stage('Build with Compression') {
+            steps {
+                sh 'mvn clean package'
+                
+                script {
+                    // Compress large artifacts
+                    sh '''
+                        cd target
+                        for jar in *.jar; do
+                            if [ -f "$jar" ] && [ $(stat -f%z "$jar" 2>/dev/null || stat -c%s "$jar") -gt 10485760 ]; then
+                                echo "Compressing large artifact: $jar"
+                                gzip -9 "$jar"
+                                mv "$jar.gz" "$jar.compressed"
+                            fi
+                        done
+                    '''
+                    
+                    // Archive with compression
+                    archiveArtifacts artifacts: 'target/*.jar,target/*.compressed', allowEmptyArchive: true
+                    
+                    // Create artifact manifest for tracking
+                    sh '''
+                        echo "Build: ${BUILD_NUMBER}" > artifact-manifest.txt
+                        echo "Date: $(date)" >> artifact-manifest.txt
+                        echo "Artifacts:" >> artifact-manifest.txt
+                        ls -la target/*.jar target/*.compressed >> artifact-manifest.txt 2>/dev/null || true
+                    '''
+                    
+                    archiveArtifacts artifacts: 'artifact-manifest.txt'
+                }
+            }
+        }
+    }
+}
+System-Level Space Optimization
+Jenkins Configuration Optimization
+Optimizing Jenkins system configuration addresses space consumption at the platform level, affecting all pipelines and jobs running on the instance.
+
+JVM Memory Management configures Java Virtual Machine settings to optimize memory usage and reduce disk I/O for temporary files:
+
+groovy
+// Jenkins startup configuration (jenkins.xml or systemd service)
+// -Xmx4g -Xms2g -XX:MaxMetaspaceSize=512m
+// -XX:+UseG1GC -XX:G1HeapRegionSize=16m
+// -XX:+UseStringDeduplication
+// -Djava.awt.headless=true
+// -Djava.io.tmpdir=/opt/jenkins/tmp
+// -Djenkins.install.runSetupWizard=false
+
+pipeline {
+    agent any
+    options {
+        // Reduce pipeline durability for better performance
+        durabilityHint('PERFORMANCE_OPTIMIZED')
+        
+        // Limit concurrent builds to reduce memory pressure
+        disableConcurrentBuilds()
+    }
+    stages {
+        stage('Memory-Optimized Build') {
+            steps {
+                script {
+                    // Monitor memory usage during build
+                    sh 'echo "Memory usage before build:"'
+                    sh 'free -h'
+                    
+                    // Configure build tools for memory efficiency
+                    env.MAVEN_OPTS = '-Xmx1g -XX:+UseG1GC'
+                    env.GRADLE_OPTS = '-Xmx1g -Dorg.gradle.daemon=false'
+                    
+                    sh 'mvn clean package'
+                    
+                    sh 'echo "Memory usage after build:"'
+                    sh 'free -h'
+                }
+            }
+        }
+    }
+}
+Plugin Storage Optimization manages plugin data and temporary files to prevent accumulation of unnecessary storage consumption:
+
+groovy
+pipeline {
+    agent any
+    stages {
+        stage('Plugin Data Cleanup') {
+            steps {
+                script {
+                    // Clean up temporary plugin files
+                    sh '''
+                        # Clean up temporary files from various plugins
+                        find ${JENKINS_HOME}/tmp -name "*.tmp" -mtime +1 -delete 2>/dev/null || true
+                        find ${JENKINS_HOME}/plugins -name "*.hpi.pinned" -delete 2>/dev/null || true
+                        
+                        # Clean up workspace metadata
+                        find ${JENKINS_HOME}/workspace -name ".metadata" -type d -exec rm -rf {} + 2>/dev/null || true
+                        
+                        # Clean up old fingerprint data
+                        find ${JENKINS_HOME}/fingerprints -name "*.xml" -mtime +30 -delete 2>/dev/null || true
+                    '''
+                }
+            }
+        }
+    }
+}
+Distributed Storage Strategies
+Implementing distributed storage approaches distributes space consumption across multiple storage systems and locations.
+
+Multi-Tier Storage Architecture utilizes different storage systems based on data access patterns and retention requirements:
+
+groovy
+pipeline {
+    agent any
+    environment {
+        FAST_STORAGE = '/opt/jenkins/fast-storage'
+        ARCHIVE_STORAGE = '/opt/jenkins/archive-storage'
+        CLOUD_STORAGE = 's3://jenkins-artifacts'
+    }
+    stages {
+        stage('Tiered Storage Build') {
+            steps {
+                // Use fast storage for active build operations
+                sh "mkdir -p ${FAST_STORAGE}/${JOB_NAME}/${BUILD_NUMBER}"
+                
+                dir("${FAST_STORAGE}/${JOB_NAME}/${BUILD_NUMBER}") {
+                    // Perform build in fast storage
+                    checkout scm
+                    sh 'mvn clean package'
+                    
+                    // Archive critical artifacts to persistent storage
+                    sh "cp target/*.jar ${ARCHIVE_STORAGE}/"
+                    
+                    // Upload release artifacts to cloud storage
+                    script {
+                        if (env.BRANCH_NAME == 'main') {
+                            sh "aws s3 cp target/*.jar ${CLOUD_STORAGE}/releases/"
+                        }
+                    }
+                }
+            }
+        }
+        stage('Storage Cleanup') {
+            steps {
+                script {
+                    // Clean up fast storage after build
+                    sh "rm -rf ${FAST_STORAGE}/${JOB_NAME}/${BUILD_NUMBER}"
+                    
+                    // Implement retention policy for archive storage
+                    sh """
+                        find ${ARCHIVE_STORAGE} -name "*.jar" -mtime +7 -delete
+                        find ${ARCHIVE_STORAGE} -type d -empty -delete
+                    """
+                }
+            }
+        }
+    }
+}
+Network-Attached Storage Integration leverages external storage systems to reduce local disk pressure:
+
+groovy
+pipeline {
+    agent any
+    environment {
+        NFS_MOUNT = '/mnt/jenkins-shared'
+        BUILD_CACHE = "${NFS_MOUNT}/build-cache"
+        ARTIFACT_STORE = "${NFS_MOUNT}/artifacts"
+    }
+    stages {
+        stage('Network Storage Build') {
+            steps {
+                script {
+                    // Ensure network storage is available
+                    sh "mountpoint -q ${NFS_MOUNT} || mount ${NFS_MOUNT}"
+                    
+                    // Create job-specific directories
+                    sh "mkdir -p ${BUILD_CACHE}/${JOB_NAME}"
+                    sh "mkdir -p ${ARTIFACT_STORE}/${JOB_NAME}"
+                    
+                    // Use network storage for large dependencies
+                    sh "ln -sf ${BUILD_CACHE}/${JOB_NAME} ./.build-cache"
+                    
+                    // Perform build with network-cached dependencies
+                    sh 'mvn clean package -Dmaven.repo.local=./.build-cache/maven-repo'
+                    
+                    // Store artifacts on network storage
+                    sh "cp target/*.jar ${ARTIFACT_STORE}/${JOB_NAME}/"
+                }
+            }
+        }
+    }
+    post {
+        always {
+            // Clean local workspace but preserve network storage
+            cleanWs(patterns: [
+                [pattern: '.build-cache', type: 'EXCLUDE']
+            ])
+        }
+    }
+}
+Monitoring and Automated Space Management
+Proactive Space Monitoring
+Implementing comprehensive space monitoring enables proactive management of disk usage before critical thresholds are reached.
+
+Real-Time Space Monitoring Pipeline continuously tracks disk usage across Jenkins infrastructure:
+
+groovy
+pipeline {
+    agent any
+    triggers {
+        cron('H/15 * * * *') // Run every 15 minutes
+    }
+    stages {
+        stage('Space Monitoring') {
+            steps {
+                script {
+                    // Check disk usage on Jenkins master
+                    def diskUsage = sh(
+                        script: "df -h ${JENKINS_HOME} | awk 'NR==2 {print \$5}' | sed 's/%//'",
+                        returnStdout: true
+                    ).trim().toInteger()
+                    
+                    // Check workspace disk usage
+                    def workspaceUsage = sh(
+                        script: "du -sh ${JENKINS_HOME}/workspace | awk '{print \$1}'",
+                        returnStdout: true
+                    ).trim()
+                    
+                    // Check artifact storage
+                    def artifactUsage = sh(
+                        script: "du -sh ${JENKINS_HOME}/jobs/*/builds/*/archive 2>/dev/null | awk '{sum += \$1} END {print sum \"M\"}' || echo '0M'",
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo "Disk usage: ${diskUsage}%"
+                    echo "Workspace usage: ${workspaceUsage}"
+                    echo "Artifact usage: ${artifactUsage}"
+                    
+                    // Alert if usage exceeds thresholds
+                    if (diskUsage > 85) {
+                        currentBuild.result = 'UNSTABLE'
+                        emailext(
+                            subject: "Jenkins Disk Space Alert - ${diskUsage}% Used",
+                            body: "Jenkins disk usage has exceeded 85%. Current usage: ${diskUsage}%",
+                            to: "${env.ADMIN_EMAIL}"
+                        )
+                    }
+                    
+                    // Trigger cleanup if usage exceeds critical threshold
+                    if (diskUsage > 90) {
+                        build job: 'emergency-cleanup', wait: false
+                    }
+                }
+            }
+        }
+    }
+}
+Automated Cleanup Orchestration implements intelligent cleanup strategies based on space usage patterns and business requirements:
+
+groovy
+pipeline {
+    agent any
+    parameters {
+        choice(name: 'CLEANUP_LEVEL', choices: ['conservative', 'moderate', 'aggressive'], description: 'Cleanup intensity')
+        booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Preview cleanup actions without executing')
+    }
+    stages {
+        stage('Automated Space Cleanup') {
+            steps {
+                script {
+                    def cleanupActions = []
+                    
+                    // Conservative cleanup
+                    if (params.CLEANUP_LEVEL in ['conservative', 'moderate', 'aggressive']) {
+                        cleanupActions.addAll([
+                            'find ${JENKINS_HOME}/workspace -name "target" -type d -mtime +7',
+                            'find ${JENKINS_HOME}/workspace -name "node_modules" -type d -mtime +3',
+                            'find ${JENKINS_HOME}/workspace -name "*.log" -mtime +14'
+                        ])
+                    }
+                    
+                    // Moderate cleanup
+                    if (params.CLEANUP_LEVEL in ['moderate', 'aggressive']) {
+                        cleanupActions.addAll([
+                            'find ${JENKINS_HOME}/jobs/*/builds -name "log" -mtime +30',
+                            'find ${JENKINS_HOME}/workspace -type d -empty',
+                            'find ${JENKINS_HOME}/tmp -name "*" -mtime +1'
+                        ])
+                    }
+                    
+                    // Aggressive cleanup
+                    if (params.CLEANUP_LEVEL == 'aggressive') {
+                        cleanupActions.addAll([
+                            'find ${JENKINS_HOME}/jobs/*/builds/*/archive -name "*" -mtime +7',
+                            'find ${JENKINS_HOME}/workspace -name ".git" -type d -exec du -sh {} \\; | sort -hr | head -10',
+                            'find ${JENKINS_HOME}/fingerprints -name "*.xml" -mtime +7'
+                        ])
+                    }
+                    
+                    // Execute or preview cleanup actions
+                    cleanupActions.each { action ->
+                        if (params.DRY_RUN) {
+                            echo "DRY RUN: ${action}"
+                            sh "${action} | head -20"
+                        } else {
+                            echo "EXECUTING: ${action}"
+                            sh "${action} -delete"
+                        }
+                    }
+                    
+                    // Report space savings
+                    if (!params.DRY_RUN) {
+                        def spaceAfter = sh(
+                            script: "df -h ${JENKINS_HOME} | awk 'NR==2 {print \$4}'",
+                            returnStdout: true
+                        ).trim()
+                        echo "Available space after cleanup: ${spaceAfter}"
+                    }
+                }
+            }
+        }
+    }
+}
+Performance Impact and Results
+Implementing comprehensive space optimization strategies in Jenkins pipelines typically yields substantial improvements in both performance and operational efficiency. Organizations commonly observe 50-70% reductions in disk space usage, with some environments achieving even greater savings through aggressive cleanup and optimization strategies.
+
+Build Performance Improvements manifest through reduced I/O overhead, faster workspace initialization, and improved system responsiveness. Optimized Jenkins instances typically experience 20-40% faster build times due to reduced disk contention and more efficient resource utilization.
+
+System Reliability increases significantly when disk space constraints are eliminated, reducing the frequency of build failures due to insufficient storage and improving overall pipeline stability.
+
+Operational Cost Reduction becomes evident through decreased storage infrastructure requirements, reduced backup and archival costs, and improved resource efficiency across the Jenkins deployment.
