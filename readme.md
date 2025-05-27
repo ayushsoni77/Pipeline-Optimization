@@ -271,7 +271,7 @@ We welcome contributions to improve Jenkins optimization strategies and implemen
 ### How to Contribute
 
 1. **Fork the Repository**
-2. **Create Feature Branch**: `git checkout -b feature/optimization-improvement`
+2. **Create Feature Branch**: 
 3. **Make Changes**: Implement your optimization strategy
 4. **Add Tests**: Include validation and testing procedures
 5. **Update Documentation**: Document your changes and benefits
